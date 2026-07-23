@@ -62,8 +62,8 @@ python ../pyseer-runner.py --vcf variants.vcf.gz --phenotypes subset.pheno --loa
 python ../pyseer-runner.py --vcf variants.vcf.gz --phenotypes subset.pheno --phenotype-column continuous --load-vars enet_vcf --wg enet --alpha 1 --cor-filter 0.25 --save-predictions preds.cont.txt > 40.log 2> 40.err || die "Enet saving predictions to file (continuous phenotype)"
 
 # test other pyseer commands
-#this gives an error on CI because of missing Tk/X
-#python ../scree_plot_pyseer-runner.py distances.tsv.gz --max-dimensions 20 > /dev/null 2> /dev/null || die "Scree plot"
+python ../scree_plot_pyseer-runner.py distances.tsv.gz --max-dimensions 20 > /dev/null 2> /dev/null || die "Scree plot"
+test -s scree_plot.png || die "Scree plot did not produce an output file"
 python ../similarity-runner.py samples.txt --kmers kmers.gz > /dev/null 2> /dev/null || die "Similarity w/ kmers"
 python ../similarity-runner.py samples.txt --vcf variants.vcf.gz > /dev/null 2> /dev/null || die "Similarity w/ vcf"
 python ../similarity-runner.py samples.txt --pres presence_absence.Rtab > /dev/null 2> /dev/null || die "Similarity w/ roary/piggy"
