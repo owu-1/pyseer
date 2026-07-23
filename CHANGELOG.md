@@ -1,4 +1,7 @@
 # CHANGELOG
+v1.4.2 (July 2026)
+- Bugfix: `scree_plot_pyseer` no longer forces the interactive `TkAgg` backend, which crashed on headless machines (#304)
+
 v1.4.1 (March 2026)
 - Bugfix: Avoid crashes due to newer versions of numpy and scikit-learn
 
