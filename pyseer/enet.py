@@ -24,6 +24,7 @@ from cvglmnetCoef import cvglmnetCoef
 from cvglmnetPredict import cvglmnetPredict
 
 import pyseer.classes as var_obj
+from . import _diag
 from .input import read_variant
 from .model import pre_filtering
 from .model import fit_lineage_effect
@@ -174,17 +175,24 @@ def fit_enet(p, variants, covariates, weights, continuous, alpha,
         variants = hstack([csc_matrix(covariates.values), variants])
 
     # Run model fit
+    _diag.log("fit_enet: variants=%s  --cpu(parallel)=%s  n_folds=%s  foldid=%s"
+              % (getattr(variants, "shape", "?"), n_cpus, n_folds,
+                 "provided" if fold_ids is not None else "None -> glmnet picks at RANDOM"))
+    _snap = _diag.snapshot()
     if fold_ids is None:
         enet_fit = cvglmnet(x = variants, y = p.values.astype('float64'), family = regression_type,
                             nfolds = n_folds, alpha = alpha, parallel = n_cpus, weights = weights)
     else:
         enet_fit = cvglmnet(x = variants, y = p.values.astype('float64'), family = regression_type,
                             foldid = fold_ids, alpha = alpha, parallel = n_cpus, weights = weights)
+    _diag.since("  cvglmnet (the only parallel part)", _snap)
 
     # Extract best lambda and predict class labels/values
+    _snap = _diag.snapshot()
     betas = cvglmnetCoef(enet_fit, s = 'lambda_min')
     best_lambda_idx = np.argmin(enet_fit['cvm'])
     predictions, R2 = enet_predict(enet_fit, variants, continuous, p.values)
+    _diag.since("  cvglmnetCoef + enet_predict", _snap)
 
     # Write some summary stats
     # R^2 = 1 - sum((yi_obs - yi_predicted)^2) /sum((yi_obs - yi_mean)^2)
@@ -376,6 +384,39 @@ def write_lineage_predictions(true_values, predictions, fold_ids,
     return(R2_vals, confusion)
 
 
+def _fast_corfilter_enabled():
+    """Opt-in vectorised correlation_filter. Default OFF -> original behaviour."""
+    return os.environ.get("PYSEER_FAST_CORFILTER", "").strip().lower() not in (
+        "", "0", "false", "no")
+
+
+def _correlation_filter_vectorised(p, all_vars, quantile_filter):
+    """Same result as the loop below, with sparse matrix algebra instead of a
+    Python loop calling all_vars.getrow() once per variant.
+
+    cor_i = | (A_i - mean_i) . b | / sqrt( sum((A_i - mean_i)^2) * sum(b^2) )
+
+    Every term is a whole-matrix sparse reduction, so this is a handful of
+    vectorised ops rather than n_variants individual row extractions.
+    """
+    n = all_vars.shape[1]
+    b = (p.values - np.mean(p.values)).astype("float64").ravel()
+    sum_b_squared = float(np.sum(np.power(b, 2)))
+
+    rowsum = np.asarray(all_vars.sum(axis=1)).ravel()
+    sum_sq = np.asarray(all_vars.multiply(all_vars).sum(axis=1)).ravel()
+    k_mean = rowsum / n
+
+    ab = np.asarray(all_vars.dot(b)).ravel() - k_mean * b.sum()
+    sum_a_squared = sum_sq - 2 * k_mean * rowsum + np.power(k_mean, 2) * n
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        cor = np.abs(ab / np.sqrt(sum_a_squared * sum_b_squared))
+    cor = np.where(k_mean == 0, np.nan, cor)      # match the loop's empty-row case
+
+    return np.nonzero(cor > np.percentile(cor, quantile_filter * 100))[0]
+
+
 def correlation_filter(p, all_vars, quantile_filter = 0.25):
     """Calculates correlations between phenotype and variants,
     giving those that are above the specified quantile
@@ -395,6 +436,14 @@ def correlation_filter(p, all_vars, quantile_filter = 0.25):
         cor_filter (numpy.array)
             The indices of variants passing the filter
     """
+    if _fast_corfilter_enabled():
+        _snap = _diag.snapshot()
+        result = _correlation_filter_vectorised(p, all_vars, quantile_filter)
+        _diag.since("    correlation_filter VECTORISED (%d variants)"
+                    % all_vars.shape[0], _snap, "kept %d" % len(result))
+        return result
+
+    _snap = _diag.snapshot()
     # a = snp - mean(snp)
     # b = y - mean(y)
     # cor = abs(a%*%b / sqrt(sum(a^2)*sum(b^2)) )
@@ -418,6 +467,8 @@ def correlation_filter(p, all_vars, quantile_filter = 0.25):
             correlations.append(cor)
 
     cor_filter = np.nonzero(correlations > np.percentile(correlations, quantile_filter*100))[0]
+    _diag.since("    correlation_filter PYTHON LOOP (%d variants)" % all_vars.shape[0],
+                _snap, "kept %d" % len(cor_filter))
     return(cor_filter)
 
 

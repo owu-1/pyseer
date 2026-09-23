@@ -23,6 +23,7 @@ import pandas as pd
 from multiprocessing import Pool
 
 from .__init__ import __version__
+from . import _diag
 
 from .input import load_phenotypes
 from .input import load_structure
@@ -304,6 +305,9 @@ def main():
     if (options.block_size < 1):
         sys.stderr.write('Block size must be at least 1\n')
         sys.exit(1)
+
+    # optional timing / CPU-utilisation instrumentation; no-op unless PYSEER_DIAG=1
+    _diag.install()
 
     # silence warnings
     warnings.filterwarnings('ignore')
@@ -599,6 +603,7 @@ def main():
         model = options.wg
         # read all variants
         sys.stderr.write("Reading all variants\n")
+        _snap = _diag.snapshot()
         if options.load_vars:
             all_vars = scipy.sparse.load_npz(options.load_vars + ".npz")
             with open(options.load_vars + ".pkl", 'rb') as pickle_obj:
@@ -633,6 +638,9 @@ def main():
                     pickle.dump([file_hash(var_file), var_indices, p.index, loaded], pickle_file)
                     sys.stderr.write("Saved enet variants as %s.pkl\n" % options.save_vars)
 
+        _diag.since("load variants (cache read or full parse)", _snap)
+        _snap = _diag.snapshot()
+
         # Apply the correlation filtering
         if options.cor_filter > 0:
             sys.stderr.write("Applying correlation filtering\n")
@@ -642,6 +650,8 @@ def main():
         else:
             all_vars = all_vars.transpose()
             var_indices = np.array(var_indices)
+
+        _diag.since("correlation filter + transpose (SERIAL)", _snap)
 
         tested = len(var_indices)
         prefilter = loaded - tested
@@ -662,13 +672,17 @@ def main():
         if (model == "enet"):
             sys.stderr.write("Fitting elastic net to top " + str(tested) +
                              " variants\n")
+            _snap = _diag.snapshot()
             enet_betas = fit_enet(p, all_vars, cov, weights,
                                   options.continuous, options.alpha,
                                   lineage_dict_full, fold_ids, options.n_folds,
                                   options.cpu, options.save_predictions,)
+            _diag.since("fit_enet  (--cpu %d, --n-folds %d)"
+                        % (options.cpu, options.n_folds), _snap)
 
             # print those with passing indices, along with coefficient
             sys.stderr.write("Finding and printing selected variants\n")
+            _snap = _diag.snapshot()
             infile, sample_order = \
                 open_variant_file(var_type, var_file,
                                   options.burden, burden_regions,
@@ -690,6 +704,8 @@ def main():
                                             burden_regions, infile, all_strains, sample_order, options.continuous,
                                             options.lineage, lineage_clusters, options.uncompressed)
 
+            _diag.since("find_enet_selected (RE-READS variant file, SERIAL)", _snap)
+            _snap = _diag.snapshot()
             print('\t'.join(header))
             for x in selected_vars:
                 printed += 1
@@ -710,6 +726,7 @@ def main():
                 with open(options.save_model + '.pkl', 'wb') as pickle_file:
                     pickle.dump([pred_model, options.continuous], pickle_file)
                     sys.stderr.write("Saved enet model as %s.pkl\n" % options.save_model)
+            _diag.since("print selected variants + save model", _snap)
 
         elif model == "rf":
             sys.stderr.write("Fitting random forest to top " + str(tested) + " variants\n")
