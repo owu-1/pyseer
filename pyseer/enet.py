@@ -418,7 +418,12 @@ def _correlation_filter_vectorised(p, all_vars, quantile_filter):
 
     with np.errstate(divide="ignore", invalid="ignore"):
         cor = np.abs(ab / np.sqrt(sum_a_squared * sum_b_squared))
-    cor = np.where(k_mean == 0, np.nan, cor)      # match the loop's empty-row case
+    # An all-zero row (a variant carried by NONE of the samples in this phenotype
+    # file) has no correlation with anything, so score it 0.0 and let the percentile
+    # filter below drop it. This used to be NaN, which made np.percentile return NaN,
+    # which made every comparison False, which left the filter EMPTY -- and glmnet
+    # then died on a 0-variant matrix ("top 0 variants", glmnet error code 10000).
+    cor = np.where(k_mean == 0, 0.0, cor)
 
     return np.nonzero(cor > np.percentile(cor, quantile_filter * 100))[0]
 
@@ -464,8 +469,10 @@ def correlation_filter(p, all_vars, quantile_filter = 0.25):
         k = all_vars.getrow(row_idx)
         k_mean = csr_matrix.mean(k)
         if k_mean == 0:
-            # avoid crashes due to an empty sparse vector
-            correlations.append([np.nan])
+            # An all-zero variant row. Score it 0.0, NOT NaN: NaN poisons the
+            # np.percentile call at the end of this function, which empties the whole
+            # filter and makes glmnet fail with "top 0 variants".
+            correlations.append([0.0])
         else:
             ab = k.dot(b) - np.sum(k_mean * b)
             sum_a_squared = k.dot(k.transpose()).data[0] - 2*k_mean*csr_matrix.sum(k) + pow(k_mean, 2) * all_vars.shape[1]
